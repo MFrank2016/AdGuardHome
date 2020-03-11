@@ -3,7 +3,9 @@ package home
 import (
 	"fmt"
 	"hash/crc32"
+	"io"
 	"io/ioutil"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -494,33 +496,52 @@ func (filter *filter) update() (bool, error) {
 		return false, fmt.Errorf("got status code != 200: %d", resp.StatusCode)
 	}
 
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		log.Printf("Couldn't fetch filter contents from URL %s, skipping: %s", filter.URL, err)
-		return false, err
+	htmlTest := true
+	firstChunk := make([]byte, 4*1024)
+	firstChunkLen := 0
+	buf := make([]byte, 64*1024)
+	ioutil.TempFile()
+	checksum := uint32(0)
+	for {
+		n, err := resp.Body.Read(buf)
+
+		if htmlTest {
+			// gather full buffer firstChunk and perform its data tests
+			num := int(math.Min(float64(n), float64(len(firstChunk)-firstChunkLen)))
+			copied := copy(firstChunk[firstChunkLen:], buf[:num])
+			firstChunkLen += copied
+
+			if firstChunkLen == len(firstChunk) || err == io.EOF {
+				if !isPrintableText(firstChunk) {
+					return false, fmt.Errorf("Data contains non-printable characters")
+				}
+
+				s := strings.ToLower(string(firstChunk))
+				if strings.Index(s, "<html") >= 0 ||
+					strings.Index(s, "<!doctype") >= 0 {
+					return false, fmt.Errorf("Data is HTML, not plain text")
+				}
+
+				htmlTest = false
+				firstChunk = nil
+			}
+		}
+
+		checksum = crc32.Update(checksum, crc32.IEEETable, buf[:n])
+
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Printf("Couldn't fetch filter contents from URL %s, skipping: %s", filter.URL, err)
+			return false, err
+		}
 	}
 
 	// Check if the filter has been really changed
-	checksum := crc32.ChecksumIEEE(body)
 	if filter.checksum == checksum {
 		log.Tracef("Filter #%d at URL %s hasn't changed, not updating it", filter.ID, filter.URL)
 		return false, nil
-	}
-
-	var firstChunk []byte
-	if len(body) <= 4096 {
-		firstChunk = body
-	} else {
-		firstChunk = body[:4096]
-	}
-	if !isPrintableText(firstChunk) {
-		return false, fmt.Errorf("Data contains non-printable characters")
-	}
-
-	s := strings.ToLower(string(firstChunk))
-	if strings.Index(s, "<html") >= 0 ||
-		strings.Index(s, "<!doctype") >= 0 {
-		return false, fmt.Errorf("Data is HTML, not plain text")
 	}
 
 	// Extract filter name and count number of rules
