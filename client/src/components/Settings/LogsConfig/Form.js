@@ -42,6 +42,15 @@ const Form = (props) => {
                     disabled={processing}
                 />
             </div>
+            <div className="form__group form__group--settings">
+                <Field
+                    name="hide_client_ip"
+                    type="checkbox"
+                    component={renderSelectField}
+                    placeholder={t('hide_client_ip')}
+                    disabled={processing}
+                />
+            </div>
             <label className="form__label">
                 <Trans>query_log_retention</Trans>
             </label>
