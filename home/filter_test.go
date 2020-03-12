@@ -11,13 +11,13 @@ import (
 
 func TestFilters(t *testing.T) {
 	dir := prepareTestDir()
-	_ = os.MkdirAll(dir+"/data/"+filterDir, 0755)
 	defer func() { _ = os.RemoveAll(dir) }()
 	Context = homeContext{}
 	Context.workDir = dir
 	Context.client = &http.Client{
 		Timeout: 5 * time.Second,
 	}
+	Context.filters.Init()
 
 	f := filter{
 		URL: "https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt",
