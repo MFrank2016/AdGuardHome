@@ -28,6 +28,7 @@ var (
 )
 
 func initFiltering() {
+	_ = os.MkdirAll(filepath.Join(Context.getDataDir(), filterDir), 0755)
 	loadFilters(config.Filters)
 	loadFilters(config.WhitelistFilters)
 	deduplicateFilters()
