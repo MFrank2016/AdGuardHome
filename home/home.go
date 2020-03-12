@@ -445,6 +445,8 @@ func cleanup() {
 	if err != nil {
 		log.Error("Couldn't stop DHCP server: %s", err)
 	}
+
+	CloseFiltering()
 }
 
 // Stop HTTP server, possibly waiting for all active connections to be closed

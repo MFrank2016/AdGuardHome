@@ -11,12 +11,12 @@ import (
 
 func TestFilters(t *testing.T) {
 	dir := prepareTestDir()
+	_ = os.MkdirAll(dir+"/data/"+filterDir, 0755)
 	defer func() { _ = os.RemoveAll(dir) }()
-
 	Context = homeContext{}
 	Context.workDir = dir
 	Context.client = &http.Client{
-		Timeout: time.Minute * 5,
+		Timeout: 5 * time.Second,
 	}
 
 	f := filter{
@@ -25,14 +25,12 @@ func TestFilters(t *testing.T) {
 
 	// download
 	ok, err := f.update()
-	assert.True(t, ok && err == nil)
+	assert.Equal(t, nil, err)
+	assert.True(t, ok)
 
 	// refresh
 	ok, err = f.update()
 	assert.True(t, !ok && err == nil)
-
-	err = f.save()
-	assert.True(t, err == nil)
 
 	err = f.load()
 	assert.True(t, err == nil)

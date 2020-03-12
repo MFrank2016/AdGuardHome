@@ -67,19 +67,8 @@ func handleFilteringAddURL(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "Couldn't fetch filter from url %s: %s", f.URL, err)
 		return
 	}
-	if f.RulesCount == 0 {
-		httpError(w, http.StatusBadRequest, "Filter at the url %s has no rules (maybe it points to blank page?)", f.URL)
-		return
-	}
 	if !ok {
 		httpError(w, http.StatusBadRequest, "Filter at the url %s is invalid (maybe it points to blank page?)", f.URL)
-		return
-	}
-
-	// Save the filter contents
-	err = f.save()
-	if err != nil {
-		httpError(w, http.StatusBadRequest, "Failed to save filter %d due to %s", f.ID, err)
 		return
 	}
 
@@ -218,11 +207,6 @@ func handleFilteringSetRules(w http.ResponseWriter, r *http.Request) {
 
 	config.UserRules = strings.Split(string(body), "\n")
 	onConfigModified()
-	userFilter := userFilter()
-	err = userFilter.save()
-	if err != nil {
-		log.Error("Couldn't save the user filter: %s", err)
-	}
 	enableFilters(true)
 }
 

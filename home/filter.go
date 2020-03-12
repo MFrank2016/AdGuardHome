@@ -1,11 +1,11 @@
 package home
 
 import (
+	"bufio"
 	"fmt"
 	"hash/crc32"
 	"io"
 	"io/ioutil"
-	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -17,7 +17,6 @@ import (
 
 	"github.com/AdguardTeam/AdGuardHome/dnsfilter"
 	"github.com/AdguardTeam/AdGuardHome/util"
-	"github.com/AdguardTeam/golibs/file"
 	"github.com/AdguardTeam/golibs/log"
 )
 
@@ -41,6 +40,10 @@ func startFiltering() {
 	//  but currently we can't wake up the periodic task to do so.
 	// So for now we just start this periodic task from here.
 	go periodicallyRefreshFilters()
+}
+
+// CloseFiltering - close filters
+func CloseFiltering() {
 }
 
 func defaultFilters() []filter {
@@ -321,7 +324,6 @@ func refreshFiltersArray(filters *[]filter, force bool) (int, []filter, []bool, 
 			log.Printf("Failed to update filter %s: %s\n", uf.URL, err)
 			continue
 		}
-		uf.LastUpdated = now
 	}
 
 	if nfail == len(updateFilters) {
@@ -332,18 +334,6 @@ func refreshFiltersArray(filters *[]filter, force bool) (int, []filter, []bool, 
 	for i := range updateFilters {
 		uf := &updateFilters[i]
 		updated := updateFlags[i]
-		if updated {
-			err := uf.saveAndBackupOld()
-			if err != nil {
-				log.Printf("Failed to save the updated filter %d: %s", uf.ID, err)
-				continue
-			}
-		} else {
-			e := os.Chtimes(uf.Path(), uf.LastUpdated, uf.LastUpdated)
-			if e != nil {
-				log.Error("os.Chtimes(): %v", e)
-			}
-		}
 
 		config.Lock()
 		for k := range *filters {
@@ -359,7 +349,6 @@ func refreshFiltersArray(filters *[]filter, force bool) (int, []filter, []bool, 
 			log.Info("Updated filter #%d.  Rules: %d -> %d",
 				f.ID, f.RulesCount, uf.RulesCount)
 			f.Name = uf.Name
-			f.Data = nil
 			f.RulesCount = uf.RulesCount
 			f.checksum = uf.checksum
 			updateCount++
@@ -383,14 +372,15 @@ const (
 // Algorithm:
 // . Get the list of filters to be updated
 // . For each filter run the download and checksum check operation
+//  . Store downloaded data in a temporary file inside data/filters directory
 // . For each filter:
 //  . If filter data hasn't changed, just set new update time on file
 //  . If filter data has changed:
-//    . rename the old file (1.txt -> 1.txt.old)
-//    . store the new data on disk (1.txt)
+//    . rename the temporary file (<temp> -> 1.txt)
+//      Note that this method works only on UNIX.
+//      On Windows we don't pass files to dnsfilter - we pass the whole data.
 //  . Pass new filters to dnsfilter object - it analyzes new data while the old filters are still active
 //  . dnsfilter activates new filters
-//  . Remove the old filter files (1.txt.old)
 //
 // Return the number of updated filters
 // Return TRUE - there was a network error and nothing could be updated
@@ -451,15 +441,22 @@ func isPrintableText(data []byte) bool {
 }
 
 // A helper function that parses filter contents and returns a number of rules and a filter name (if there's any)
-func parseFilterContents(contents []byte) (int, string) {
-	data := string(contents)
+func parseFilterContents(f io.Reader) (int, uint32, string) {
 	rulesCount := 0
 	name := ""
 	seenTitle := false
+	r := bufio.NewReader(f)
+	checksum := uint32(0)
 
-	// Count lines in the filter
-	for len(data) != 0 {
-		line := util.SplitNext(&data, '\n')
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			break
+		}
+
+		checksum = crc32.Update(checksum, crc32.IEEETable, []byte(line))
+
+		line = strings.TrimSpace(line)
 		if len(line) == 0 {
 			continue
 		}
@@ -475,12 +472,35 @@ func parseFilterContents(contents []byte) (int, string) {
 		}
 	}
 
-	return rulesCount, name
+	return rulesCount, checksum, name
 }
 
-// Perform upgrade on a filter
+// Perform upgrade on a filter and update LastUpdated value
 func (filter *filter) update() (bool, error) {
+	b, err := filter.updateIntl()
+	filter.LastUpdated = time.Now()
+	if !b {
+		e := os.Chtimes(filter.Path(), filter.LastUpdated, filter.LastUpdated)
+		if e != nil {
+			log.Error("os.Chtimes(): %v", e)
+		}
+	}
+	return b, err
+}
+
+func (filter *filter) updateIntl() (bool, error) {
 	log.Tracef("Downloading update for filter %d from %s", filter.ID, filter.URL)
+
+	tmpfile, err := ioutil.TempFile(filepath.Join(Context.getDataDir(), filterDir), "")
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		if tmpfile != nil {
+			_ = tmpfile.Close()
+			_ = os.Remove(tmpfile.Name())
+		}
+	}()
 
 	resp, err := Context.client.Get(filter.URL)
 	if resp != nil && resp.Body != nil {
@@ -500,14 +520,14 @@ func (filter *filter) update() (bool, error) {
 	firstChunk := make([]byte, 4*1024)
 	firstChunkLen := 0
 	buf := make([]byte, 64*1024)
-	ioutil.TempFile()
-	checksum := uint32(0)
+	total := 0
 	for {
 		n, err := resp.Body.Read(buf)
+		total += n
 
 		if htmlTest {
 			// gather full buffer firstChunk and perform its data tests
-			num := int(math.Min(float64(n), float64(len(firstChunk)-firstChunkLen)))
+			num := util.MinInt(n, len(firstChunk)-firstChunkLen)
 			copied := copy(firstChunk[firstChunkLen:], buf[:num])
 			firstChunkLen += copied
 
@@ -527,7 +547,10 @@ func (filter *filter) update() (bool, error) {
 			}
 		}
 
-		checksum = crc32.Update(checksum, crc32.IEEETable, buf[:n])
+		_, err2 := tmpfile.Write(buf[:n])
+		if err2 != nil {
+			return false, err2
+		}
 
 		if err == io.EOF {
 			break
@@ -538,47 +561,32 @@ func (filter *filter) update() (bool, error) {
 		}
 	}
 
+	// Extract filter name and count number of rules
+	_, _ = tmpfile.Seek(0, io.SeekStart)
+	rulesCount, checksum, filterName := parseFilterContents(tmpfile)
 	// Check if the filter has been really changed
 	if filter.checksum == checksum {
 		log.Tracef("Filter #%d at URL %s hasn't changed, not updating it", filter.ID, filter.URL)
 		return false, nil
 	}
 
-	// Extract filter name and count number of rules
-	rulesCount, filterName := parseFilterContents(body)
-	log.Printf("Filter %d has been updated: %d bytes, %d rules", filter.ID, len(body), rulesCount)
+	log.Printf("Filter %d has been updated: %d bytes, %d rules",
+		filter.ID, total, rulesCount)
 	if filterName != "" {
 		filter.Name = filterName
 	}
 	filter.RulesCount = rulesCount
-	filter.Data = body
 	filter.checksum = checksum
-
-	return true, nil
-}
-
-// saves filter contents to the file in dataDir
-// This method is safe to call during filters update,
-//  because it creates a new file and then renames it,
-//  so the currently opened file descriptors to the old filter file remain valid.
-func (filter *filter) save() error {
 	filterFilePath := filter.Path()
 	log.Printf("Saving filter %d contents to: %s", filter.ID, filterFilePath)
-
-	err := file.SafeWrite(filterFilePath, filter.Data)
-
-	// update LastUpdated field after saving the file
-	filter.LastUpdated = filter.LastTimeUpdated()
-	return err
-}
-
-func (filter *filter) saveAndBackupOld() error {
-	filterFilePath := filter.Path()
-	err := os.Rename(filterFilePath, filterFilePath+".old")
-	if err != nil && !os.IsNotExist(err) {
-		return err
+	err = os.Rename(tmpfile.Name(), filterFilePath)
+	if err != nil {
+		return false, err
 	}
-	return filter.save()
+	tmpfile.Close()
+	tmpfile = nil
+
+	return true, nil
 }
 
 // loads filter contents from the file in dataDir
@@ -591,17 +599,19 @@ func (filter *filter) load() error {
 		return err
 	}
 
-	filterFileContents, err := ioutil.ReadFile(filterFilePath)
+	f, err := os.Open(filterFilePath)
 	if err != nil {
 		return err
 	}
+	defer f.Close()
+	st, _ := f.Stat()
 
-	log.Tracef("File %s, id %d, length %d", filterFilePath, filter.ID, len(filterFileContents))
-	rulesCount, _ := parseFilterContents(filterFileContents)
+	log.Tracef("File %s, id %d, length %d",
+		filterFilePath, filter.ID, st.Size())
+	rulesCount, checksum, _ := parseFilterContents(f)
 
 	filter.RulesCount = rulesCount
-	filter.Data = nil
-	filter.checksum = crc32.ChecksumIEEE(filterFileContents)
+	filter.checksum = checksum
 	filter.LastUpdated = filter.LastTimeUpdated()
 
 	return nil
@@ -609,8 +619,8 @@ func (filter *filter) load() error {
 
 // Clear filter rules
 func (filter *filter) unload() {
-	filter.Data = nil
 	filter.RulesCount = 0
+	filter.checksum = 0
 }
 
 // Path to the filter contents
