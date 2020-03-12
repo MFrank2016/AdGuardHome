@@ -105,7 +105,7 @@ const (
 
 // Update properties for a filter specified by its URL
 // Return status* flags.
-func (fmod *Filtering) filterSetProperties(url string, newf filter, whitelist bool) int {
+func (f *Filtering) filterSetProperties(url string, newf filter, whitelist bool) int {
 	r := 0
 	config.Lock()
 	defer config.Unlock()
@@ -116,44 +116,44 @@ func (fmod *Filtering) filterSetProperties(url string, newf filter, whitelist bo
 	}
 
 	for i := range *filters {
-		f := &(*filters)[i]
-		if f.URL != url {
+		filt := &(*filters)[i]
+		if filt.URL != url {
 			continue
 		}
 
 		log.Debug("filter: set properties: %s: {%s %s %v}",
-			f.URL, newf.Name, newf.URL, newf.Enabled)
-		f.Name = newf.Name
+			filt.URL, newf.Name, newf.URL, newf.Enabled)
+		filt.Name = newf.Name
 
-		if f.URL != newf.URL {
+		if filt.URL != newf.URL {
 			r |= statusURLChanged | statusUpdateRequired
 			if filterExistsNoLock(newf.URL) {
 				return statusURLExists
 			}
-			f.URL = newf.URL
-			f.unload()
-			f.LastUpdated = time.Time{}
-			f.checksum = 0
-			f.RulesCount = 0
+			filt.URL = newf.URL
+			filt.unload()
+			filt.LastUpdated = time.Time{}
+			filt.checksum = 0
+			filt.RulesCount = 0
 		}
 
-		if f.Enabled != newf.Enabled {
+		if filt.Enabled != newf.Enabled {
 			r |= statusEnabledChanged
-			f.Enabled = newf.Enabled
-			if f.Enabled {
+			filt.Enabled = newf.Enabled
+			if filt.Enabled {
 				if (r & statusURLChanged) == 0 {
-					e := fmod.load(f)
+					e := f.load(filt)
 					if e != nil {
 						// This isn't a fatal error,
 						//  because it may occur when someone removes the file from disk.
-						f.LastUpdated = time.Time{}
-						f.checksum = 0
-						f.RulesCount = 0
+						filt.LastUpdated = time.Time{}
+						filt.checksum = 0
+						filt.RulesCount = 0
 						r |= statusUpdateRequired
 					}
 				}
 			} else {
-				f.unload()
+				filt.unload()
 			}
 		}
 
