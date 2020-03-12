@@ -33,7 +33,7 @@ type filterAddJSON struct {
 	Whitelist bool   `json:"whitelist"`
 }
 
-func (fmod *Filtering) handleFilteringAddURL(w http.ResponseWriter, r *http.Request) {
+func (f *Filtering) handleFilteringAddURL(w http.ResponseWriter, r *http.Request) {
 	fj := filterAddJSON{}
 	err := json.NewDecoder(r.Body).Decode(&fj)
 	if err != nil {
@@ -53,35 +53,35 @@ func (fmod *Filtering) handleFilteringAddURL(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Set necessary properties
-	f := filter{
+	filt := filter{
 		Enabled: true,
 		URL:     fj.URL,
 		Name:    fj.Name,
 		white:   fj.Whitelist,
 	}
-	f.ID = assignUniqueFilterID()
+	filt.ID = assignUniqueFilterID()
 
 	// Download the filter contents
-	ok, err := fmod.update(&f)
+	ok, err := f.update(&filt)
 	if err != nil {
-		httpError(w, http.StatusBadRequest, "Couldn't fetch filter from url %s: %s", f.URL, err)
+		httpError(w, http.StatusBadRequest, "Couldn't fetch filter from url %s: %s", filt.URL, err)
 		return
 	}
 	if !ok {
-		httpError(w, http.StatusBadRequest, "Filter at the url %s is invalid (maybe it points to blank page?)", f.URL)
+		httpError(w, http.StatusBadRequest, "Filter at the url %s is invalid (maybe it points to blank page?)", filt.URL)
 		return
 	}
 
 	// URL is deemed valid, append it to filters, update config, write new filter file and tell dns to reload it
-	if !filterAdd(f) {
-		httpError(w, http.StatusBadRequest, "Filter URL already added -- %s", f.URL)
+	if !filterAdd(filt) {
+		httpError(w, http.StatusBadRequest, "Filter URL already added -- %s", filt.URL)
 		return
 	}
 
 	onConfigModified()
 	enableFilters(true)
 
-	_, err = fmt.Fprintf(w, "OK %d rules\n", f.RulesCount)
+	_, err = fmt.Fprintf(w, "OK %d rules\n", filt.RulesCount)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "Couldn't write body: %s", err)
 	}
@@ -145,7 +145,7 @@ type filterURLReq struct {
 	Data      filterURLJSON `json:"data"`
 }
 
-func (fmod *Filtering) handleFilteringSetURL(w http.ResponseWriter, r *http.Request) {
+func (f *Filtering) handleFilteringSetURL(w http.ResponseWriter, r *http.Request) {
 	fj := filterURLReq{}
 	err := json.NewDecoder(r.Body).Decode(&fj)
 	if err != nil {
@@ -158,12 +158,12 @@ func (fmod *Filtering) handleFilteringSetURL(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	f := filter{
+	filt := filter{
 		Enabled: fj.Data.Enabled,
 		Name:    fj.Data.Name,
 		URL:     fj.Data.URL,
 	}
-	status := fmod.filterSetProperties(fj.URL, f, fj.Whitelist)
+	status := f.filterSetProperties(fj.URL, filt, fj.Whitelist)
 	if (status & statusFound) == 0 {
 		http.Error(w, "URL doesn't exist", http.StatusBadRequest)
 		return
@@ -185,7 +185,7 @@ func (fmod *Filtering) handleFilteringSetURL(w http.ResponseWriter, r *http.Requ
 		if fj.Whitelist {
 			flags = FilterRefreshAllowlists
 		}
-		nUpdated, _ := fmod.refreshFilters(flags, true)
+		nUpdated, _ := f.refreshFilters(flags, true)
 		// if at least 1 filter has been updated, refreshFilters() restarts the filtering automatically
 		// if not - we restart the filtering ourselves
 		restart = false
