@@ -24,15 +24,15 @@ func TestFilters(t *testing.T) {
 	}
 
 	// download
-	ok, err := f.update()
+	ok, err := Context.filters.update(&f)
 	assert.Equal(t, nil, err)
 	assert.True(t, ok)
 
 	// refresh
-	ok, err = f.update()
+	ok, err = Context.filters.update(&f)
 	assert.True(t, !ok && err == nil)
 
-	err = f.load()
+	err = Context.filters.load(&f)
 	assert.True(t, err == nil)
 
 	f.unload()
