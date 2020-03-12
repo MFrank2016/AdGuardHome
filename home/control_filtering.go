@@ -33,7 +33,7 @@ type filterAddJSON struct {
 	Whitelist bool   `json:"whitelist"`
 }
 
-func handleFilteringAddURL(w http.ResponseWriter, r *http.Request) {
+func (fmod *Filtering) handleFilteringAddURL(w http.ResponseWriter, r *http.Request) {
 	fj := filterAddJSON{}
 	err := json.NewDecoder(r.Body).Decode(&fj)
 	if err != nil {
@@ -62,7 +62,7 @@ func handleFilteringAddURL(w http.ResponseWriter, r *http.Request) {
 	f.ID = assignUniqueFilterID()
 
 	// Download the filter contents
-	ok, err := f.update()
+	ok, err := fmod.update(&f)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, "Couldn't fetch filter from url %s: %s", f.URL, err)
 		return
@@ -87,7 +87,7 @@ func handleFilteringAddURL(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func handleFilteringRemoveURL(w http.ResponseWriter, r *http.Request) {
+func (f *Filtering) handleFilteringRemoveURL(w http.ResponseWriter, r *http.Request) {
 
 	type request struct {
 		URL       string `json:"url"`
@@ -145,7 +145,7 @@ type filterURLReq struct {
 	Data      filterURLJSON `json:"data"`
 }
 
-func handleFilteringSetURL(w http.ResponseWriter, r *http.Request) {
+func (fmod *Filtering) handleFilteringSetURL(w http.ResponseWriter, r *http.Request) {
 	fj := filterURLReq{}
 	err := json.NewDecoder(r.Body).Decode(&fj)
 	if err != nil {
@@ -163,7 +163,7 @@ func handleFilteringSetURL(w http.ResponseWriter, r *http.Request) {
 		Name:    fj.Data.Name,
 		URL:     fj.Data.URL,
 	}
-	status := filterSetProperties(fj.URL, f, fj.Whitelist)
+	status := fmod.filterSetProperties(fj.URL, f, fj.Whitelist)
 	if (status & statusFound) == 0 {
 		http.Error(w, "URL doesn't exist", http.StatusBadRequest)
 		return
@@ -185,7 +185,7 @@ func handleFilteringSetURL(w http.ResponseWriter, r *http.Request) {
 		if fj.Whitelist {
 			flags = FilterRefreshAllowlists
 		}
-		nUpdated, _ := refreshFilters(flags, true)
+		nUpdated, _ := fmod.refreshFilters(flags, true)
 		// if at least 1 filter has been updated, refreshFilters() restarts the filtering automatically
 		// if not - we restart the filtering ourselves
 		restart = false
@@ -198,7 +198,7 @@ func handleFilteringSetURL(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func handleFilteringSetRules(w http.ResponseWriter, r *http.Request) {
+func (f *Filtering) handleFilteringSetRules(w http.ResponseWriter, r *http.Request) {
 	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, "Failed to read request body: %s", err)
@@ -210,7 +210,7 @@ func handleFilteringSetRules(w http.ResponseWriter, r *http.Request) {
 	enableFilters(true)
 }
 
-func handleFilteringRefresh(w http.ResponseWriter, r *http.Request) {
+func (f *Filtering) handleFilteringRefresh(w http.ResponseWriter, r *http.Request) {
 	type Req struct {
 		White bool `json:"whitelist"`
 	}
@@ -232,7 +232,7 @@ func handleFilteringRefresh(w http.ResponseWriter, r *http.Request) {
 	if req.White {
 		flags = FilterRefreshAllowlists
 	}
-	resp.Updated, err = refreshFilters(flags|FilterRefreshForce, false)
+	resp.Updated, err = f.refreshFilters(flags|FilterRefreshForce, false)
 	Context.controlLock.Lock()
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err)
@@ -282,7 +282,7 @@ func filterToJSON(f filter) filterJSON {
 }
 
 // Get filtering configuration
-func handleFilteringStatus(w http.ResponseWriter, r *http.Request) {
+func (f *Filtering) handleFilteringStatus(w http.ResponseWriter, r *http.Request) {
 	resp := filteringConfig{}
 	config.RLock()
 	resp.Enabled = config.DNS.FilteringEnabled
@@ -311,7 +311,7 @@ func handleFilteringStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // Set filtering configuration
-func handleFilteringConfig(w http.ResponseWriter, r *http.Request) {
+func (f *Filtering) handleFilteringConfig(w http.ResponseWriter, r *http.Request) {
 	req := filteringConfig{}
 	err := json.NewDecoder(r.Body).Decode(&req)
 	if err != nil {
@@ -343,7 +343,7 @@ type checkHostResp struct {
 	IPList    []net.IP `json:"ip_addrs"` // list of IP addresses
 }
 
-func handleCheckHost(w http.ResponseWriter, r *http.Request) {
+func (f *Filtering) handleCheckHost(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	host := q.Get("name")
 
@@ -373,15 +373,15 @@ func handleCheckHost(w http.ResponseWriter, r *http.Request) {
 }
 
 // RegisterFilteringHandlers - register handlers
-func RegisterFilteringHandlers() {
-	httpRegister("GET", "/control/filtering/status", handleFilteringStatus)
-	httpRegister("POST", "/control/filtering/config", handleFilteringConfig)
-	httpRegister("POST", "/control/filtering/add_url", handleFilteringAddURL)
-	httpRegister("POST", "/control/filtering/remove_url", handleFilteringRemoveURL)
-	httpRegister("POST", "/control/filtering/set_url", handleFilteringSetURL)
-	httpRegister("POST", "/control/filtering/refresh", handleFilteringRefresh)
-	httpRegister("POST", "/control/filtering/set_rules", handleFilteringSetRules)
-	httpRegister("GET", "/control/filtering/check_host", handleCheckHost)
+func (f *Filtering) RegisterFilteringHandlers() {
+	httpRegister("GET", "/control/filtering/status", f.handleFilteringStatus)
+	httpRegister("POST", "/control/filtering/config", f.handleFilteringConfig)
+	httpRegister("POST", "/control/filtering/add_url", f.handleFilteringAddURL)
+	httpRegister("POST", "/control/filtering/remove_url", f.handleFilteringRemoveURL)
+	httpRegister("POST", "/control/filtering/set_url", f.handleFilteringSetURL)
+	httpRegister("POST", "/control/filtering/refresh", f.handleFilteringRefresh)
+	httpRegister("POST", "/control/filtering/set_rules", f.handleFilteringSetRules)
+	httpRegister("GET", "/control/filtering/check_host", f.handleCheckHost)
 }
 
 func checkFiltersUpdateIntervalHours(i uint32) bool {

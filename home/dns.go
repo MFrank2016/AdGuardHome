@@ -81,7 +81,7 @@ func initDNSServer() error {
 	Context.rdns = InitRDNS(Context.dnsServer, &Context.clients)
 	Context.whois = initWhois(&Context.clients)
 
-	initFiltering()
+	Context.filters.Init()
 	return nil
 }
 
@@ -229,7 +229,7 @@ func startDNSServer() error {
 	}
 
 	Context.dnsFilter.Start()
-	startFiltering()
+	Context.filters.Start()
 	Context.stats.Start()
 	Context.queryLog.Start()
 

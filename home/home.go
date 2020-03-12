@@ -67,6 +67,7 @@ type homeContext struct {
 	auth        *Auth                // HTTP authentication module
 	httpServer  *http.Server         // HTTP module
 	httpsServer HTTPSServer          // HTTPS module
+	filters     Filtering
 
 	// Runtime properties
 	// --
@@ -446,7 +447,7 @@ func cleanup() {
 		log.Error("Couldn't stop DHCP server: %s", err)
 	}
 
-	CloseFiltering()
+	Context.filters.Close()
 }
 
 // Stop HTTP server, possibly waiting for all active connections to be closed

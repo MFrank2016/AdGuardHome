@@ -21,30 +21,46 @@ import (
 )
 
 var (
-	nextFilterID      = time.Now().Unix() // semi-stable way to generate an unique ID
-	filterTitleRegexp = regexp.MustCompile(`^! Title: +(.*)$`)
-	refreshStatus     uint32 // 0:none; 1:in progress
-	refreshLock       sync.Mutex
+	nextFilterID = time.Now().Unix() // semi-stable way to generate an unique ID
 )
 
-func initFiltering() {
+// type FilteringConf struct {
+// 	BlockLists []filter
+// 	AllowLists []filter
+// 	UserRules []string
+// }
+
+// Filtering - module object
+type Filtering struct {
+	// conf FilteringConf
+	refreshStatus     uint32 // 0:none; 1:in progress
+	refreshLock       sync.Mutex
+	filterTitleRegexp *regexp.Regexp
+}
+
+// Init - initialize the module
+func (f *Filtering) Init() {
+	f.filterTitleRegexp = regexp.MustCompile(`^! Title: +(.*)$`)
 	_ = os.MkdirAll(filepath.Join(Context.getDataDir(), filterDir), 0755)
-	loadFilters(config.Filters)
-	loadFilters(config.WhitelistFilters)
+	f.loadFilters(config.Filters)
+	f.loadFilters(config.WhitelistFilters)
 	deduplicateFilters()
 	updateUniqueFilterID(config.Filters)
 	updateUniqueFilterID(config.WhitelistFilters)
 }
 
-func startFiltering() {
+// Start - start the module
+func (f *Filtering) Start() {
+	f.RegisterFilteringHandlers()
+
 	// Here we should start updating filters,
 	//  but currently we can't wake up the periodic task to do so.
 	// So for now we just start this periodic task from here.
-	go periodicallyRefreshFilters()
+	go f.periodicallyRefreshFilters()
 }
 
-// CloseFiltering - close filters
-func CloseFiltering() {
+// Close - close the module
+func (f *Filtering) Close() {
 }
 
 func defaultFilters() []filter {
@@ -89,7 +105,7 @@ const (
 
 // Update properties for a filter specified by its URL
 // Return status* flags.
-func filterSetProperties(url string, newf filter, whitelist bool) int {
+func (fmod *Filtering) filterSetProperties(url string, newf filter, whitelist bool) int {
 	r := 0
 	config.Lock()
 	defer config.Unlock()
@@ -126,7 +142,7 @@ func filterSetProperties(url string, newf filter, whitelist bool) int {
 			f.Enabled = newf.Enabled
 			if f.Enabled {
 				if (r & statusURLChanged) == 0 {
-					e := f.load()
+					e := fmod.load(f)
 					if e != nil {
 						// This isn't a fatal error,
 						//  because it may occur when someone removes the file from disk.
@@ -189,7 +205,7 @@ func filterAdd(f filter) bool {
 
 // Load filters from the disk
 // And if any filter has zero ID, assign a new one
-func loadFilters(array []filter) {
+func (f *Filtering) loadFilters(array []filter) {
 	for i := range array {
 		filter := &array[i] // otherwise we're operating on a copy
 		if filter.ID == 0 {
@@ -201,7 +217,7 @@ func loadFilters(array []filter) {
 			continue
 		}
 
-		err := filter.load()
+		err := f.load(filter)
 		if err != nil {
 			log.Error("Couldn't load filter %d contents due to %s", filter.ID, err)
 		}
@@ -241,16 +257,16 @@ func assignUniqueFilterID() int64 {
 }
 
 // Sets up a timer that will be checking for filters updates periodically
-func periodicallyRefreshFilters() {
+func (f *Filtering) periodicallyRefreshFilters() {
 	const maxInterval = 1 * 60 * 60
 	intval := 5 // use a dynamically increasing time interval
 	for {
 		isNetworkErr := false
-		if config.DNS.FiltersUpdateIntervalHours != 0 && atomic.CompareAndSwapUint32(&refreshStatus, 0, 1) {
-			refreshLock.Lock()
-			_, isNetworkErr = refreshFiltersIfNecessary(FilterRefreshBlocklists | FilterRefreshAllowlists)
-			refreshLock.Unlock()
-			refreshStatus = 0
+		if config.DNS.FiltersUpdateIntervalHours != 0 && atomic.CompareAndSwapUint32(&f.refreshStatus, 0, 1) {
+			f.refreshLock.Lock()
+			_, isNetworkErr = f.refreshFiltersIfNecessary(FilterRefreshBlocklists | FilterRefreshAllowlists)
+			f.refreshLock.Unlock()
+			f.refreshStatus = 0
 			if !isNetworkErr {
 				intval = maxInterval
 			}
@@ -271,20 +287,20 @@ func periodicallyRefreshFilters() {
 // flags: FilterRefresh*
 // important:
 //  TRUE: ignore the fact that we're currently updating the filters
-func refreshFilters(flags int, important bool) (int, error) {
-	set := atomic.CompareAndSwapUint32(&refreshStatus, 0, 1)
+func (f *Filtering) refreshFilters(flags int, important bool) (int, error) {
+	set := atomic.CompareAndSwapUint32(&f.refreshStatus, 0, 1)
 	if !important && !set {
 		return 0, fmt.Errorf("Filters update procedure is already running")
 	}
 
-	refreshLock.Lock()
-	nUpdated, _ := refreshFiltersIfNecessary(flags)
-	refreshLock.Unlock()
-	refreshStatus = 0
+	f.refreshLock.Lock()
+	nUpdated, _ := f.refreshFiltersIfNecessary(flags)
+	f.refreshLock.Unlock()
+	f.refreshStatus = 0
 	return nUpdated, nil
 }
 
-func refreshFiltersArray(filters *[]filter, force bool) (int, []filter, []bool, bool) {
+func (f *Filtering) refreshFiltersArray(filters *[]filter, force bool) (int, []filter, []bool, bool) {
 	var updateFilters []filter
 	var updateFlags []bool // 'true' if filter data has changed
 
@@ -318,7 +334,7 @@ func refreshFiltersArray(filters *[]filter, force bool) (int, []filter, []bool, 
 	nfail := 0
 	for i := range updateFilters {
 		uf := &updateFilters[i]
-		updated, err := uf.update()
+		updated, err := f.update(uf)
 		updateFlags = append(updateFlags, updated)
 		if err != nil {
 			nfail++
@@ -385,7 +401,7 @@ const (
 //
 // Return the number of updated filters
 // Return TRUE - there was a network error and nothing could be updated
-func refreshFiltersIfNecessary(flags int) (int, bool) {
+func (f *Filtering) refreshFiltersIfNecessary(flags int) (int, bool) {
 	log.Debug("Filters: updating...")
 
 	updateCount := 0
@@ -398,13 +414,13 @@ func refreshFiltersIfNecessary(flags int) (int, bool) {
 		force = true
 	}
 	if (flags & FilterRefreshBlocklists) != 0 {
-		updateCount, updateFilters, updateFlags, netError = refreshFiltersArray(&config.Filters, force)
+		updateCount, updateFilters, updateFlags, netError = f.refreshFiltersArray(&config.Filters, force)
 	}
 	if (flags & FilterRefreshAllowlists) != 0 {
 		updateCountW := 0
 		var updateFiltersW []filter
 		var updateFlagsW []bool
-		updateCountW, updateFiltersW, updateFlagsW, netErrorW = refreshFiltersArray(&config.WhitelistFilters, force)
+		updateCountW, updateFiltersW, updateFlagsW, netErrorW = f.refreshFiltersArray(&config.WhitelistFilters, force)
 		updateCount += updateCountW
 		updateFilters = append(updateFilters, updateFiltersW...)
 		updateFlags = append(updateFlags, updateFlagsW...)
@@ -442,11 +458,11 @@ func isPrintableText(data []byte) bool {
 }
 
 // A helper function that parses filter contents and returns a number of rules and a filter name (if there's any)
-func parseFilterContents(f io.Reader) (int, uint32, string) {
+func (f *Filtering) parseFilterContents(file io.Reader) (int, uint32, string) {
 	rulesCount := 0
 	name := ""
 	seenTitle := false
-	r := bufio.NewReader(f)
+	r := bufio.NewReader(file)
 	checksum := uint32(0)
 
 	for {
@@ -463,7 +479,7 @@ func parseFilterContents(f io.Reader) (int, uint32, string) {
 		}
 
 		if line[0] == '!' {
-			m := filterTitleRegexp.FindAllStringSubmatch(line, -1)
+			m := f.filterTitleRegexp.FindAllStringSubmatch(line, -1)
 			if len(m) > 0 && len(m[0]) >= 2 && !seenTitle {
 				name = m[0][1]
 				seenTitle = true
@@ -477,8 +493,8 @@ func parseFilterContents(f io.Reader) (int, uint32, string) {
 }
 
 // Perform upgrade on a filter and update LastUpdated value
-func (filter *filter) update() (bool, error) {
-	b, err := filter.updateIntl()
+func (f *Filtering) update(filter *filter) (bool, error) {
+	b, err := f.updateIntl(filter)
 	filter.LastUpdated = time.Now()
 	if !b {
 		e := os.Chtimes(filter.Path(), filter.LastUpdated, filter.LastUpdated)
@@ -489,7 +505,7 @@ func (filter *filter) update() (bool, error) {
 	return b, err
 }
 
-func (filter *filter) updateIntl() (bool, error) {
+func (f *Filtering) updateIntl(filter *filter) (bool, error) {
 	log.Tracef("Downloading update for filter %d from %s", filter.ID, filter.URL)
 
 	tmpfile, err := ioutil.TempFile(filepath.Join(Context.getDataDir(), filterDir), "")
@@ -564,7 +580,7 @@ func (filter *filter) updateIntl() (bool, error) {
 
 	// Extract filter name and count number of rules
 	_, _ = tmpfile.Seek(0, io.SeekStart)
-	rulesCount, checksum, filterName := parseFilterContents(tmpfile)
+	rulesCount, checksum, filterName := f.parseFilterContents(tmpfile)
 	// Check if the filter has been really changed
 	if filter.checksum == checksum {
 		log.Tracef("Filter #%d at URL %s hasn't changed, not updating it", filter.ID, filter.URL)
@@ -591,7 +607,7 @@ func (filter *filter) updateIntl() (bool, error) {
 }
 
 // loads filter contents from the file in dataDir
-func (filter *filter) load() error {
+func (f *Filtering) load(filter *filter) error {
 	filterFilePath := filter.Path()
 	log.Tracef("Loading filter %d contents to: %s", filter.ID, filterFilePath)
 
@@ -600,16 +616,16 @@ func (filter *filter) load() error {
 		return err
 	}
 
-	f, err := os.Open(filterFilePath)
+	file, err := os.Open(filterFilePath)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	st, _ := f.Stat()
+	defer file.Close()
+	st, _ := file.Stat()
 
 	log.Tracef("File %s, id %d, length %d",
 		filterFilePath, filter.ID, st.Size())
-	rulesCount, checksum, _ := parseFilterContents(f)
+	rulesCount, checksum, _ := f.parseFilterContents(file)
 
 	filter.RulesCount = rulesCount
 	filter.checksum = checksum
