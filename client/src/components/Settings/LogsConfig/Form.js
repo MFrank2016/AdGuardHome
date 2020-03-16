@@ -48,6 +48,7 @@ const Form = (props) => {
                     type="checkbox"
                     component={renderSelectField}
                     placeholder={t('hide_client_ip')}
+                    subtitle={t('hide_client_ip_desc')}
                     disabled={processing}
                 />
             </div>
