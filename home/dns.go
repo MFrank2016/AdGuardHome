@@ -299,5 +299,7 @@ func closeDNSServer() {
 		Context.auth = nil
 	}
 
+	Context.filters.Close()
+
 	log.Debug("Closed all DNS modules")
 }
